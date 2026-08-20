@@ -60,6 +60,16 @@ logger = logging.getLogger("NetSpeedTray.StatsMonitorThread")
 # per-second network readout - never on the GUI thread. See releases/v2.1/KICKOFF.md §2/§3.
 _IDENTITY_POLL_INTERVAL_SEC: float = 5.0
 
+# LibreHardwareMonitor identifier prefixes that scope a sensor to something that is NOT the CPU.
+# The CPU-temperature search falls back to matching sensor *names* (for boards that label the die
+# sensor oddly - Ryzen's "Core (Tctl/Tdie)", super-I/O chips under /lpc/), and a name match must
+# never out-vote an identifier that says the sensor belongs to another device: NVIDIA's sensor is
+# literally named "GPU Core", which matched the "CORE" keyword, so on a hybrid laptop with no
+# CPU-die sensor we reported the GPU's temperature as the CPU's (#237).
+_NON_CPU_SENSOR_IDENTS: tuple = (
+    "/gpu", "/nvme", "/hdd", "/ssd", "/psu", "/battery", "/network", "/ram",
+)
+
 
 class GpuPollResult(NamedTuple):
     """Structured result from GPU polling, replacing opaque 4-tuple."""
@@ -112,6 +122,7 @@ class StatsMonitorThread(QThread):
         # None = not yet tried, False = tried and unavailable, object = connected.
         self._wmi_ohm: Any = None
         self._ohm_guidance_logged: bool = False  # One-time "no sensor source" guidance, logged only when NO namespace connects
+        self._last_temp_source_sig: Optional[Tuple[str, str]] = None  # (source, sensor) of the last-logged CPU-temp read; re-logged only on change (#216)
         self._lhm_notice_emitted: bool = False  # One-time notification flag
         self._lhm_check_polls: int = 0  # Count polls before emitting notice
         self._last_identity_poll: float = 0.0  # monotonic ts of the last network-identity sub-poll (0 = poll immediately)
@@ -127,8 +138,15 @@ class StatsMonitorThread(QThread):
 
         # PDH Queries for GPU
         self._gpu_query: Optional[int] = None
-        self._gpu_util_counters: List[int] = []
-        self._gpu_vram_counters: List[int] = []
+        # Single WILDCARD counter handles, read via GetFormattedCounterArray - not a list of
+        # per-instance handles snapshotted at startup (see _init_gpu_query for why).
+        self._gpu_util_counter: Optional[int] = None
+        self._gpu_vram_counter: Optional[int] = None
+        # Latched: True once the wildcard has ever returned at least one GPU Engine instance.
+        # AddCounter on a wildcard path succeeds whenever the counter OBJECT exists, so it is not
+        # evidence of a GPU - deriving "present" from it would fabricate a 0% readout on RDP
+        # sessions, VMs and GPU-less boxes.
+        self._gpu_engine_seen: bool = False
         # Set by update_config (GUI thread); the PDH handles are owned by run()'s thread, so the actual
         # cleanup/re-init is deferred to the loop (see update_config / run).
         self._hw_queries_dirty: bool = False
@@ -169,43 +187,59 @@ class StatsMonitorThread(QThread):
         self.config = config
         self._hw_queries_dirty = True
 
+    def invalidate_hardware_queries(self) -> None:
+        """Flag the PDH/WMI hardware handles for a rebuild on the next poll.
+
+        Same mechanism and same thread-safety reasoning as update_config, but for environment
+        changes rather than settings changes: PDH handles do not survive suspend/resume or a GPU
+        adapter appearing or disappearing, and a stale handle just returns nothing forever (a flat
+        0.0 VRAM after every wake - #237). Safe to call from the GUI thread; run() does the actual
+        cleanup on its own thread.
+        """
+        self._hw_queries_dirty = True
+
     def _init_gpu_query(self) -> bool:
-        """Initializes Windows PDH query for universal GPU utilization and VRAM."""
+        """Initializes Windows PDH query for universal GPU utilization and VRAM.
+
+        Both counters are added as WILDCARD paths and read with GetFormattedCounterArray, rather
+        than enumerating instances once and adding one handle each. \\GPU Engine instances are
+        per-PROCESS (pid_1234_luid_..._engtype_3D), so a snapshot taken at startup only ever sees
+        processes that already existed - every app launched afterwards gets a new PID we never
+        subscribed to, and its load never appears. On a single-GPU box that is invisible, because
+        the compositor's own instance tracks total load closely enough; on a hybrid laptop it means
+        the discrete GPU is never sampled at all, since nothing driving it was running at launch
+        (#236). The wildcard is re-expanded on every collection, so new processes are picked up.
+
+        The same form is already used by views/monitor/hardware/worker.py, which is why the Monitor
+        window's Hardware tab reported the dGPU correctly while the widget did not.
+        """
         if not win32pdh:
             return False
-            
+
         try:
             if self._gpu_query:
                 return True
-                
-            self._gpu_query = win32pdh.OpenQuery()
-            self._gpu_util_counters = []
-            self._gpu_vram_counters = []
-            
-            # 1. Utilization Counters (\GPU Engine(*)\Utilization Percentage)
-            try:
-                _, instances = win32pdh.EnumObjectItems(None, None, "GPU Engine", win32pdh.PERF_DETAIL_WIZARD)
-                for instance in instances:
-                    # Filter for 3D engine if possible, otherwise take all and we'll MAX them
-                    counter_path = f"\\GPU Engine({instance})\\Utilization Percentage"
-                    try:
-                        handle = win32pdh.AddCounter(self._gpu_query, counter_path)
-                        self._gpu_util_counters.append(handle)
-                    except: continue
-            except Exception as e:
-                self.logger.debug("Failed to enum GPU Engine counters: %s", e)
 
-            # 2. VRAM Counters (\GPU Adapter Memory(*)\Dedicated Usage)
+            self._gpu_query = win32pdh.OpenQuery()
+            self._gpu_util_counter = None
+            self._gpu_vram_counter = None
+
+            # 1. Utilization: every engine of every adapter, all processes.
+            # Deliberately NOT filtered by engtype: a large share of instances report a blank
+            # engtype, and "Compute" is not a distinct value, so filtering to 3D would zero out
+            # exactly the compute/CUDA workloads this is meant to surface.
             try:
-                _, instances = win32pdh.EnumObjectItems(None, None, "GPU Adapter Memory", win32pdh.PERF_DETAIL_WIZARD)
-                for instance in instances:
-                    counter_path = f"\\GPU Adapter Memory({instance})\\Dedicated Usage"
-                    try:
-                        handle = win32pdh.AddCounter(self._gpu_query, counter_path)
-                        self._gpu_vram_counters.append(handle)
-                    except: continue
+                self._gpu_util_counter = win32pdh.AddCounter(
+                    self._gpu_query, r"\GPU Engine(*)\Utilization Percentage")
             except Exception as e:
-                self.logger.debug("Failed to enum GPU VRAM counters: %s", e)
+                self.logger.debug("Failed to add GPU Engine wildcard counter: %s", e)
+
+            # 2. VRAM (\GPU Adapter Memory(*)\Dedicated Usage)
+            try:
+                self._gpu_vram_counter = win32pdh.AddCounter(
+                    self._gpu_query, r"\GPU Adapter Memory(*)\Dedicated Usage")
+            except Exception as e:
+                self.logger.debug("Failed to add GPU Adapter Memory wildcard counter: %s", e)
 
             # Initial collection to prime
             win32pdh.CollectQueryData(self._gpu_query)
@@ -223,8 +257,11 @@ class StatsMonitorThread(QThread):
             except Exception:
                 pass
             self._gpu_query = None
-            self._gpu_util_counters = []
-            self._gpu_vram_counters = []
+            self._gpu_util_counter = None
+            self._gpu_vram_counter = None
+            # _gpu_engine_seen is deliberately NOT reset: a settings change or a resume rebuilds
+            # the query, and forgetting that this machine has a GPU would blink the Monitor's GPU
+            # tiles out until the next non-idle tick.
 
     def _poll_gpu_hybrid(self, include_temp: bool = True, include_power: bool = False) -> GpuPollResult:
         """
@@ -246,27 +283,39 @@ class StatsMonitorThread(QThread):
         try:
             win32pdh.CollectQueryData(self._gpu_query)
 
-            # 1. Broad Utilization (Max among engines, usually represents 3D load)
-            for handle in self._gpu_util_counters:
+            # 1. Broad Utilization (Max among engines, usually represents 3D load).
+            # The wildcard re-expands each collection, so processes started after us are included.
+            if self._gpu_util_counter is not None:
                 try:
-                    _, val = win32pdh.GetFormattedCounterValue(handle, win32pdh.PDH_FMT_DOUBLE)
-                    if val is not None:
-                        util_pct = max(util_pct, val)
-                except: continue
+                    arr = win32pdh.GetFormattedCounterArray(
+                        self._gpu_util_counter, win32pdh.PDH_FMT_DOUBLE)
+                    if arr:
+                        # A non-empty array is the only honest proof a GPU engine exists. Latched,
+                        # because the array is legitimately empty on an idle tick and we must not
+                        # flap the Monitor's GPU tiles in and out.
+                        self._gpu_engine_seen = True
+                    for val in arr.values():
+                        if isinstance(val, (int, float)):
+                            util_pct = max(util_pct, float(val))
+                except Exception as e:
+                    self.logger.debug("GPU utilization array read failed: %s", e)
 
             # 2. Universal VRAM (Dedicated Usage in bytes, convert to MiB). Only report a real
-            # number if at least one counter contributed - otherwise leave None (N/A).
-            _vram_acc = 0.0
-            _had_vram = False
-            for handle in self._gpu_vram_counters:
+            # number if at least one instance contributed - otherwise leave None (N/A).
+            if self._gpu_vram_counter is not None:
                 try:
-                    _, val = win32pdh.GetFormattedCounterValue(handle, win32pdh.PDH_FMT_DOUBLE)
-                    if val is not None:
-                        _vram_acc += (val / (1024.0 * 1024.0))
-                        _had_vram = True
-                except: continue
-            if _had_vram:
-                vram_used = _vram_acc
+                    arr = win32pdh.GetFormattedCounterArray(
+                        self._gpu_vram_counter, win32pdh.PDH_FMT_DOUBLE)
+                    _vram_acc = 0.0
+                    _had_vram = False
+                    for val in arr.values():
+                        if isinstance(val, (int, float)):
+                            _vram_acc += (float(val) / (1024.0 * 1024.0))
+                            _had_vram = True
+                    if _had_vram:
+                        vram_used = _vram_acc
+                except Exception as e:
+                    self.logger.debug("GPU VRAM array read failed: %s", e)
 
         except Exception as e:
             self.logger.debug("GPU PDH polling error: %s", e)
@@ -386,7 +435,7 @@ class StatsMonitorThread(QThread):
         # Clamp utilization to [0, 100] - PDH GPU-Engine counters can momentarily read >100%.
         util_pct = max(0.0, min(100.0, util_pct))
         return GpuPollResult(util_pct, vram_used, vram_total, temp_c, power_w,
-                             present=bool(self._gpu_util_counters))
+                             present=self._gpu_engine_seen)
 
     @lru_cache(maxsize=4)
     def _get_cached_path(self, binary: str) -> Optional[str]:
@@ -685,14 +734,67 @@ class StatsMonitorThread(QThread):
     def _poll_cpu_temperature(self) -> Optional[float]:
         """
         Polls CPU temperature, trying sources in order:
-          1. PDH Thermal Zone Information  (standard ACPI)
-          2. LibreHardwareMonitor / OpenHardwareMonitor WMI  (if running)
+          1. LibreHardwareMonitor / OpenHardwareMonitor WMI  (accurate CPU-die sensor, if running)
+          2. PDH Thermal Zone Information  (generic ACPI - often a motherboard/ambient zone)
           3. WMI MSAcpi_ThermalZoneTemperature  (legacy ACPI fallback)
+
+        LHM/OHM is tried FIRST because its CPU-die sensor (CPU Package / Tctl/Tdie) is
+        the accurate source. The generic ACPI "Thermal Zone" is frequently a
+        motherboard/ambient sensor near room temperature; when it short-circuits ahead
+        of LHM it pins the readout to a flat wrong value (issue #216: stuck at 27°C).
+        The ACPI zones remain as fallbacks so machines without a hardware-monitor tool
+        still get a reading.
 
         Note: Modern Intel/AMD CPUs often require a kernel-driver tool
         (LibreHardwareMonitor, HWiNFO64, etc.) - see the settings note.
         """
-        # 1. PDH Thermal Zone Information
+        # 1. LibreHardwareMonitor / OpenHardwareMonitor - the accurate CPU-die source.
+        self._init_ohm_wmi()
+        if self._wmi_ohm:
+            try:
+                sensors = self._wmi_ohm.ExecQuery(
+                    "SELECT Value FROM Sensor WHERE SensorType='Temperature' AND Name='CPU Package'"
+                )
+                for s in sensors:
+                    val = float(s.Value)
+                    if 0.0 < val < 150.0:
+                        return self._log_temp(val, "LHM/OHM", "CPU Package")
+                # Some boards label it differently (AMD Ryzen exposes "Core (Tctl/Tdie)",
+                # not "CPU Package"). Match on the LHM Identifier (/amdcpu/ or /intelcpu/),
+                # which reliably scopes to the CPU regardless of the display name, and
+                # broaden the name keywords to cover Ryzen's Tctl/Tdie/Tccd labels. (#148)
+                sensors = self._wmi_ohm.ExecQuery(
+                    "SELECT Value, Name, Identifier FROM Sensor WHERE SensorType='Temperature'"
+                )
+                best_val: Optional[float] = None
+                best_name: str = ""
+                for s in sensors:
+                    name = str(getattr(s, 'Name', '')).upper()
+                    ident = str(getattr(s, 'Identifier', '')).lower()
+                    # The identifier is authoritative: reject other devices before the name
+                    # keywords get a vote, or "GPU Core" matches on "CORE" (#237).
+                    if any(marker in ident for marker in _NON_CPU_SENSOR_IDENTS):
+                        continue
+                    is_cpu = (
+                        "/amdcpu/" in ident or "/intelcpu/" in ident
+                        or any(k in name for k in ("CPU", "CORE", "PACKAGE", "TCTL", "TDIE", "TCCD"))
+                    )
+                    if not is_cpu:
+                        continue
+                    try:
+                        val = float(s.Value)
+                    except (TypeError, ValueError):
+                        continue
+                    if 0.0 < val < 150.0 and (best_val is None or val > best_val):
+                        best_val = val
+                        best_name = str(getattr(s, 'Name', '')) or "CPU"
+                if best_val is not None:
+                    return self._log_temp(best_val, "LHM/OHM", best_name)
+            except Exception as e:
+                self.logger.debug("OHM/LHM CPU temp error: %s", e)
+                self._wmi_ohm = None
+
+        # 2. PDH Thermal Zone Information (generic ACPI; may be motherboard/ambient - #216)
         if win32pdh:
             if not self._thermal_query:
                 self._init_thermal_query()
@@ -701,7 +803,7 @@ class StatsMonitorThread(QThread):
                     win32pdh.CollectQueryData(self._thermal_query)
                     readings = []
 
-                    # 1a. High Precision Temperature (preferred)
+                    # 2a. High Precision Temperature (preferred)
                     for handle in self._thermal_hp_counters:
                         try:
                             _, val = win32pdh.GetFormattedCounterValue(handle, win32pdh.PDH_FMT_DOUBLE)
@@ -715,7 +817,7 @@ class StatsMonitorThread(QThread):
                                     readings.append(val)
                         except: continue
 
-                    # 1b. Standard Temperature counter (fallback)
+                    # 2b. Standard Temperature counter (fallback)
                     if not readings:
                         for handle in self._thermal_counters:
                             try:
@@ -727,49 +829,9 @@ class StatsMonitorThread(QThread):
                             except: continue
 
                     if readings:
-                        return max(readings)
+                        return self._log_temp(max(readings), "PDH ACPI", "Thermal Zone")
                 except Exception as e:
                     self.logger.debug("Thermal PDH polling error: %s", e)
-
-        # 2. LibreHardwareMonitor / OpenHardwareMonitor
-        self._init_ohm_wmi()
-        if self._wmi_ohm:
-            try:
-                sensors = self._wmi_ohm.ExecQuery(
-                    "SELECT Value FROM Sensor WHERE SensorType='Temperature' AND Name='CPU Package'"
-                )
-                for s in sensors:
-                    val = float(s.Value)
-                    if 0.0 < val < 150.0:
-                        return val
-                # Some boards label it differently (AMD Ryzen exposes "Core (Tctl/Tdie)",
-                # not "CPU Package"). Match on the LHM Identifier (/amdcpu/ or /intelcpu/),
-                # which reliably scopes to the CPU regardless of the display name, and
-                # broaden the name keywords to cover Ryzen's Tctl/Tdie/Tccd labels. (#148)
-                sensors = self._wmi_ohm.ExecQuery(
-                    "SELECT Value, Name, Identifier FROM Sensor WHERE SensorType='Temperature'"
-                )
-                readings = []
-                for s in sensors:
-                    name = str(getattr(s, 'Name', '')).upper()
-                    ident = str(getattr(s, 'Identifier', '')).lower()
-                    is_cpu = (
-                        "/amdcpu/" in ident or "/intelcpu/" in ident
-                        or any(k in name for k in ("CPU", "CORE", "PACKAGE", "TCTL", "TDIE", "TCCD"))
-                    )
-                    if not is_cpu:
-                        continue
-                    try:
-                        val = float(s.Value)
-                    except (TypeError, ValueError):
-                        continue
-                    if 0.0 < val < 150.0:
-                        readings.append(val)
-                if readings:
-                    return max(readings)
-            except Exception as e:
-                self.logger.debug("OHM/LHM CPU temp error: %s", e)
-                self._wmi_ohm = None
 
         # 3. WMI MSAcpi_ThermalZoneTemperature (legacy ACPI fallback)
         if not win32com.client:
@@ -786,16 +848,26 @@ class StatsMonitorThread(QThread):
                 # Standard ACPI: tenths of Kelvin (valid range ~2932-3932 for 20-120°C)
                 celsius = (raw / 10.0) - 273.15
                 if 0.0 < celsius < 150.0:
-                    return celsius
+                    return self._log_temp(celsius, "MSAcpi", "Thermal Zone")
                 # Some OEMs (HP, Dell, Lenovo) return direct Celsius instead
                 if 15.0 < raw < 110.0:
                     self.logger.debug("ACPI temp raw=%s interpreted as direct Celsius", raw)
-                    return float(raw)
+                    return self._log_temp(float(raw), "MSAcpi", "Thermal Zone (direct-C)")
         except Exception as e:
             self.logger.debug("CPU Temp WMI fallback error: %s", e)
             if "RPC server is unavailable" in str(e) or "0x800706ba" in str(e):
                 self._wmi = None
         return None
+
+    def _log_temp(self, celsius: float, source: str, sensor: str) -> float:
+        """Logs the selected CPU-temperature source once, and again only when it
+        changes, so a wrong reading (e.g. #216) is self-diagnosing without flooding
+        the per-second poll log. Returns the temperature unchanged."""
+        signature = (source, sensor)
+        if signature != self._last_temp_source_sig:
+            self._last_temp_source_sig = signature
+            self.logger.info("CPU temperature: %.1f°C via %s (sensor: %s).", celsius, source, sensor)
+        return celsius
 
     def run(self) -> None:
         """Main monitoring loop."""

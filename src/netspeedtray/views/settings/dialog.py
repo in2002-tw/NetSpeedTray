@@ -29,7 +29,8 @@ from PyQt6.QtWidgets import (
 # --- Custom Application Imports ---
 from netspeedtray import constants
 from netspeedtray.utils import styles as style_utils
-from netspeedtray.utils.window_state import restore_window_position, save_window_position
+from netspeedtray.utils.window_state import (restore_window_position, save_window_position,
+                                             set_window_always_on_top)
 from netspeedtray.utils.helpers import get_app_data_path, get_app_asset_path
 from netspeedtray.utils.styles import is_dark_mode
 from netspeedtray.utils.support_bundle import build_support_bundle
@@ -86,7 +87,6 @@ class SettingsDialog(QDialog):
         self.original_config = config.copy() # Keep original for rollback on reject
         self.version = version
         self.i18n = i18n
-        self.initial_language = self.i18n.language
         self.available_interfaces = available_interfaces or []
         self.startup_enabled_initial_state = is_startup_enabled
         self._user_chose_default_color = False
@@ -660,8 +660,20 @@ class SettingsDialog(QDialog):
                             "values, so your changes were not applied. See the log for details."))
                 return
 
+            # Does a restart actually change the language? Compare EFFECTIVE locales, not raw
+            # config values. Two ways to get this wrong, and the naive fixes hit one each:
+            #   * `selected and (selected != initial)` - the old code - treated None ("Auto-detect")
+            #     as "unchanged", so switching TO auto-detect never prompted (#234).
+            #   * A plain `!=` on raw values prompts whenever the value changes but the language
+            #     does not - e.g. a Korean user pinning the ko_KR that auto-detect already resolved,
+            #     which is the common path now that auto-detect works.
+            # i18n.language is the locale actually loaded in this process, so it is both the right
+            # baseline and immune to going stale when this cached dialog is reopened.
             selected_language = final_settings.get("language")
-            language_changed = selected_language and (selected_language != self.initial_language)
+            i18n_cls = constants.i18n.I18nStrings
+            effective_language = (i18n_cls.resolve_language(selected_language) if selected_language
+                                  else i18n_cls.detect_system_language())
+            language_changed = effective_language != self.i18n.language
 
             # Apply settings to the main widget/application
             if hasattr(self.parent_widget, 'handle_settings_changed'):
@@ -711,6 +723,10 @@ class SettingsDialog(QDialog):
             apply_win11_chrome(int(self.winId()), dark=is_dark_mode())
         except Exception as e:
             self.logger.debug(f"Win11 chrome not applied: {e}")
+        # Always-on-top (#213). Applied here rather than as a Qt window flag: the dialog is a cached
+        # instance that is hidden rather than destroyed, and setWindowFlags on a live window
+        # re-creates the native handle - which is exactly what makes frame-vs-client geometry drift.
+        set_window_always_on_top(self, bool(self.config.get("keep_windows_on_top", False)))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._cancel_and_close()

@@ -4,6 +4,122 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [2.1.3] - August 19, 2026
+
+A patch release built almost entirely from a month of your bug reports. The headline is a bug that
+has been in every version NetSpeedTray has ever shipped: **the app never actually detected your
+system language**. Alongside it, three real hardware-readout fixes - including one where the widget
+was showing you your *graphics card's* temperature under a CPU label.
+
+> **Please read if you have never chosen a language manually.** NetSpeedTray may now start in your
+> Windows display language instead of English, because auto-detect finally works. For Hebrew that
+> also means the whole interface mirrors right-to-left. If you preferred it in English, pick
+> **English (US)** in **Settings > General > Language** - the choice sticks.
+
+### Added
+
+- **Optional colours for the upload and download arrows. (#168)** The arrows have always taken their
+  colour from the speed text beside them - one pen paints the arrow, the number and the unit - so
+  with colour coding on, the whole line changes together. That is still the default and nothing
+  moves on upgrade. Turn on **Settings > Appearance > Custom arrow colors** to give each direction
+  its own fixed colour instead. (Thanks to [@VenusGirl](https://github.com/VenusGirl).)
+- **Keep the Settings and Monitor windows on top. (#213)** A new toggle in **Settings > Advanced >
+  Behavior** pins both windows above everything else, so the Monitor can sit over a full-screen app
+  while you watch a transfer. (Thanks to [@CMTriX](https://github.com/CMTriX).)
+
+### Fixed
+
+- **The widget could show "GPU 0%" without ever having measured the GPU.** Over a Remote Desktop
+  connection NetSpeedTray deliberately skips GPU polling, but the readout still displayed a
+  confident `0%` - which was really just the value it starts up with, not a measurement. An
+  unmeasured CPU or GPU reading now shows **N/A**, the same way an unavailable temperature or
+  wattage already did. A genuine 0% on an idle GPU is still shown as 0%.
+
+- **"Auto-detect (system)" never detected anything. (#234)** NetSpeedTray asked Windows for your
+  system language, but on Windows that call returns a name like `Korean_Korea` rather than the
+  `ko_KR` code our language files use. The lookup missed every time and quietly fell back to
+  English. German, Spanish and French happened to work purely by accident; **Korean, Japanese,
+  Russian, Polish, Dutch, Slovenian, Hebrew and both Chinese variants never did** - in any release.
+  If you ever installed NetSpeedTray, found it in English despite your system being set otherwise,
+  and assumed it simply wasn't translated: it was, and I'm sorry. It now asks Windows for your
+  display language directly. (Thanks to [@VenusGirl](https://github.com/VenusGirl), who translated
+  the app into Korean and then had to report that she couldn't see her own work.)
+  - The Language card now shows what auto-detect resolved to, so this can never fail silently again.
+  - Choosing "Auto-detect (system)" now correctly prompts you to restart. It previously stayed
+    silent, which is likely how some people ended up back in English without knowing why.
+  - If your Windows display language is English but your *regional format* is German, Spanish or
+    French, you keep the localized app you had before.
+
+- **The widget showed your GPU's temperature as your CPU's. (#237)** When a machine has no sensor
+  named exactly "CPU Package", NetSpeedTray falls back to matching sensor names - and one of the
+  words it matched on was "Core". NVIDIA's sensor is called **"GPU Core"**. On laptops whose CPU
+  publishes no temperature at all, that was the only sensor in the running, so your graphics card's
+  temperature was displayed under a CPU label. A sensor's identity now decides: anything belonging
+  to a GPU, drive, PSU, battery, network adapter or memory module is rejected outright. (Thanks to
+  [@Aaronxiexyl](https://github.com/Aaronxiexyl), whose sensor report made this visible.)
+
+- **GPU usage ignored every app you started after NetSpeedTray. (#236)** Windows reports GPU load
+  per process, and NetSpeedTray built its list of processes to watch **once, at startup** - so any
+  program launched afterwards was never counted. On a single-GPU PC this hid, because the desktop's
+  own load tracks the total closely enough. On a laptop with both an integrated and a discrete GPU
+  it meant the **discrete card was never measured at all**, since nothing using it was running at
+  launch. The readout is now rebuilt on every sample. (Thanks to
+  [@balciseri](https://github.com/balciseri) for the report - filed as a feature request, and it
+  turned out to be a bug.) *Choosing which GPU to monitor is still on the list; this makes the
+  existing readout honest first.*
+
+- **VRAM read 0.0 GB after every sleep/wake until you opened Settings and clicked Save. (#237)**
+  The GPU counters don't survive a suspend cycle, and nothing rebuilt them - saving your settings
+  was genuinely the only way to recover. They are now rebuilt when your PC wakes.
+
+- **The taskbar and the Monitor window disagreed about the temperature. (#237)** The widget cut the
+  decimal off while the Monitor rounded it, so the same 27.9 °C reading showed as "27" in one place
+  and "28" in the other. Both now round.
+
+- **Dragging the widget more than ~500 px from the tray snapped it back. (#234)** The saved position
+  is a distance from the edge of your screen, and anything past 500 was rejected and reset on the
+  next launch - so on a 4K taskbar almost any real drag silently undid itself. One reporter's log
+  had a dozen of these in half an hour. Vertical taskbars had the same problem in the other
+  direction.
+
+- **The language list only showed 10 of the 13 languages. (#237)** Chinese, Traditional Chinese and
+  Hebrew sat below the fold with no way to scroll to them by mouse. The list now shows all of them.
+
+### Changed
+
+- **Clearer guidance for CPU/GPU temperatures.** The setup dialog now says **which**
+  LibreHardwareMonitor version to install and why (v0.9.4 - later versions removed the interface
+  NetSpeedTray reads from), and states plainly that some very new CPUs publish no temperature sensor
+  at all, so you can stop troubleshooting something that isn't fixable at our end. Reading current
+  LibreHardwareMonitor releases over its web interface is tracked in
+  [#187](https://github.com/erez-c137/NetSpeedTray/issues/187).
+
+---
+
+## [2.1.2] - July 15, 2026
+
+A small patch fixing the in-app updater.
+
+### Fixed
+- **"Check for updates" opened the update window twice.** Choosing *Check for updates* from the tray menu showed the update dialog, and after you clicked **Download** a second copy of the dialog popped up over the download - which could also keep the downloaded installer from launching. The menu now shows a single update dialog, and the download and install proceed cleanly. (The automatic daily update check was never affected by this.)
+
+---
+
+## [2.1.1] - July 15, 2026
+
+A patch release. It makes the widget behave correctly on **auto-hide taskbars**, fixes a flat CPU-temperature reading, clears an antivirus false-positive, and folds in the latest community translation updates.
+
+### Fixed
+- **CPU temperature stuck at a flat value (often ~27 °C). (#216)** On some systems NetSpeedTray read the Windows ACPI "thermal zone" first and locked onto it - a sensor that's frequently a motherboard/ambient reading sitting near room temperature - instead of the accurate CPU-die value, so the temperature never moved under load. It now prefers the **LibreHardwareMonitor / OpenHardwareMonitor CPU sensor** over the ACPI zone, and records exactly which source and sensor it used so a mis-read is easy to trace. (Thanks to [@Jackboy001](https://github.com/Jackboy001) for the reports and [@CMTriX](https://github.com/CMTriX) for helping narrow it down.)
+- **Widget text cropped at the top and bottom on some taskbars. (#221)** When Windows doesn't inset the desktop work area for the taskbar - seen on some Windows 11 builds, and always with an **auto-hide** taskbar - the widget derived a height of zero and collapsed to a tiny box, clipping the two-row readout equally top and bottom. It now falls back to the true taskbar height and never shrinks below the space the text needs. (Thanks to [@vilmantasr](https://github.com/vilmantasr) for the report.)
+- **Widget jumped up and down (or sideways) when an auto-hide taskbar slid in and out. (#135)** As the hidden taskbar animated back onto the screen, the widget chased the taskbar's moving edge frame-by-frame instead of settling at its final spot. It now anchors to the stable screen edge and reappears exactly where it belongs - fixed for taskbars on every edge (bottom, top, left, and right). (Thanks to [@Johnnym3334](https://github.com/Johnnym3334) for the report.)
+- **Antivirus false-positive on a bundled file. (#135)** Some heuristic antivirus tools (for example Webroot) flagged `win32evtlog.pyd` in the application folder. NetSpeedTray never used that file - it was bundled by accident - so it has been dropped. (Heuristic scanners can still warn on *unsigned* builds; the signed release is not affected.)
+
+### Localization
+- Translation updates across **French** ([@logounet](https://github.com/logounet)), **Korean** ([@VenusGirl](https://github.com/VenusGirl)), **Simplified Chinese** ([@RainThings](https://github.com/RainThings)), and **Traditional Chinese** ([@in2002-tw](https://github.com/in2002-tw)) - collectively filling in the 2.1 network-identity, Location-onboarding, and portable-update strings and polishing existing ones.
+
+---
+
 ## [2.1.0] - July 8, 2026
 
 ### Added
@@ -12,7 +128,7 @@ All notable changes to this project will be documented in this file.
 - **Simplified Chinese** (`zh_CN`) UI translation, contributed by [@RainThings](https://github.com/RainThings). Selectable in Settings > Language. (#209)
 - **Traditional Chinese (Taiwan)** (`zh_TW`) UI translation, contributed by [@raylolhue](https://github.com/raylolhue) with terminology improvements from [@in2002-tw](https://github.com/in2002-tw) and native punctuation/phrasing polish from [@tony8077616](https://github.com/tony8077616). Selectable in Settings > Language. (#199, #215)
 
-- **Hebrew, and right-to-left support.** NetSpeedTray now speaks **Hebrew** (`he_IL`) — its first right-to-left language. The whole UI mirrors for RTL (Settings, the Monitor, menus), the history graph renders Hebrew correctly, and the Monitor now uses a font with full Hebrew coverage so every letter renders consistently. Started from [@rami123](https://github.com/rami123)'s translation; the rest is an AI-assisted first pass, so a native-speaker review is very welcome (see [TRANSLATORS.md](TRANSLATORS.md)).
+- **Hebrew, and right-to-left support.** NetSpeedTray now speaks **Hebrew** (`he_IL`) - its first right-to-left language. The whole UI mirrors for RTL (Settings, the Monitor, menus), the history graph renders Hebrew correctly, and the Monitor now uses a font with full Hebrew coverage so every letter renders consistently. Started from [@rami123](https://github.com/rami123)'s translation; the rest is an AI-assisted first pass, so a native-speaker review is very welcome (see [TRANSLATORS.md](TRANSLATORS.md)).
 - **Japanese** (`ja_JP`) and **Korean** (`ko_KR`) translations refreshed by [@coolvitto](https://github.com/coolvitto) (#205) and [@VenusGirl](https://github.com/VenusGirl) (#207).
 - **Use the widget on a display that has no taskbar of its own.** Choose a Preferred Monitor that Windows leaves without a taskbar - an accessory panel like the Corsair Xeneon Edge, for instance - and the widget now free-floats at the bottom of that screen instead of snapping back to your main taskbar. It stays put across sleep/wake and monitor changes, and you can drag it anywhere on that display. (#188)
 - **A one-time heads-up when the widget overlaps the Windows Widgets/weather panel.** With the Start button moved to the left, Windows shifts its Widgets button to the right - under where the readout likes to sit - so the two can overlap. NetSpeedTray now shows a single, dismissible nudge pointing this out; it never moves your widget for you, and you're free to drag it aside or leave it overlapping if you prefer. (#200)
