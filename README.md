@@ -93,10 +93,10 @@ The widget lives on your taskbar - at its simplest, just your up &amp; down spee
   <br/>
   <div align="center">
     <img src="screenshots/settings_appearance_2.0.png" alt="NetSpeedTray Settings - Appearance page" width="780" />
-    <p><sub><b>Appearance</b> - fonts, colours, and arrow-style presets, with a live widget preview at the bottom that updates as you change things.</sub></p>
+    <p><sub><b>Appearance</b> - fonts, colors, and arrow-style presets, with a live widget preview at the bottom that updates as you change things.</sub></p>
     <br/>
     <img src="screenshots/settings_general_2.0.png" alt="NetSpeedTray Settings - General page" width="780" />
-    <p><sub><b>General</b> - language, update rate, behaviour, preferred monitor, and configurable double-/middle-click actions. Six pages in all: General · Widget · Appearance · Hardware · Network · Advanced.</sub></p>
+    <p><sub><b>General</b> - language, update rate, behavior, preferred monitor, and configurable double-/middle-click actions. Six pages in all: General · Widget · Appearance · Hardware · Network · Advanced.</sub></p>
   </div>
 </details>
 
@@ -259,13 +259,14 @@ You probably grabbed an unsigned dev build. The official releases ([Setup.exe / 
 ### Security & Privacy
 - **Digitally signed** by the [SignPath Foundation](https://signpath.org/) - no SmartScreen warnings
 - **100% open source** (GPLv3) - no ads, no tracking, no telemetry · [Privacy Policy](privacy.md)
+- **Your history is a plain SQLite file you can query yourself** - schema, units and example queries in [DATABASE.md](DATABASE.md)
 - **PII obfuscation** - logs auto-redact paths, IPs (incl. IPv6), MACs, hostnames, and interface GUIDs
 - **Latency boundary** - off by default; gateway-only unless you explicitly opt in to a public host you name
 - **Verified updates** - the in-app updater authenticates the installer (Windows `WinVerifyTrust` + a publisher pin) before running, with a GitHub fallback
 - **Support Bundle** - one-click sanitized zip of logs + config + system info for bug reports
 
 ### Localization
-- **10 languages:** English, Korean, French, German, Russian, Spanish, Dutch, Polish, Slovenian, Japanese
+- **14 languages:** English, Korean, French, German, Russian, Spanish, Dutch, Polish, Slovenian, Japanese, Simplified Chinese, Traditional Chinese, Hebrew (RTL), Turkish
 - 100% key parity across all locales
 
 </details>
@@ -296,13 +297,13 @@ I'm not doing this for the money - but I'd be lying if I said a little support d
 
 - ⭐ **Star the repo** - one click, and it genuinely helps others find the project.
 - 🐛 **File a good bug report** - use the [template](https://github.com/erez-c137/NetSpeedTray/issues/new?template=bug_report.yml) and attach a Support Bundle; it saves me real triage time.
-- 🌍 **Improve a translation** - German and Spanish especially could use a native-speaker review. See [TRANSLATORS.md](TRANSLATORS.md).
+- 🌍 **Improve a translation** - German, Spanish and Hebrew especially could use a native-speaker review. See [TRANSLATORS.md](TRANSLATORS.md).
 
 ---
 
 ## Translators
 
-NetSpeedTray's UI lives in 10 languages thanks to the people below. Each translation is real time and care - if you use NetSpeedTray in your language, please give them a star and a thank-you.
+NetSpeedTray's UI lives in 14 languages thanks to the people below. Each translation is real time and care - if you use NetSpeedTray in your language, please give them a star and a thank-you.
 
 | Language | Locale | Translator |
 |---|---|---|
@@ -313,6 +314,10 @@ NetSpeedTray's UI lives in 10 languages thanks to the people below. Each transla
 | 🇵🇱 Polish | `pl_PL` | FadeMind |
 | 🇫🇷 French | `fr_FR` | [@logounet](https://github.com/logounet) |
 | 🇯🇵 Japanese | `ja_JP` | [@coolvitto](https://github.com/coolvitto) |
+| 🇨🇳 Simplified Chinese | `zh_CN` | [@RainThings](https://github.com/RainThings) |
+| 🇹🇼 Traditional Chinese | `zh_TW` | [@raylolhue](https://github.com/raylolhue), [@in2002-tw](https://github.com/in2002-tw), [@tony8077616](https://github.com/tony8077616) |
+| 🇹🇷 Turkish | `tr_TR` | [@lezgintekay](https://github.com/lezgintekay) - ongoing maintainer |
+| 🇮🇱 Hebrew (RTL) | `he_IL` | [@rami123](https://github.com/rami123) - **native-speaker review welcome** |
 | 🇩🇪 German | `de_DE` | Maintainer - **native-speaker review welcome** |
 | 🇪🇸 Spanish | `es_ES` | Maintainer - **native-speaker review welcome** |
 
@@ -324,7 +329,9 @@ See [TRANSLATORS.md](TRANSLATORS.md) for how translation works and how to contri
 <summary><b>🛠️ Building from Source</b> (click to expand)</summary>
 
 ### Prerequisites
-- [Python 3.11+](https://www.python.org/downloads/)
+- [Python 3.13](https://www.python.org/downloads/) - what the release is built and tested with.
+  3.11 and 3.12 still work for running from source, but 3.11 is the last version with Windows
+  binaries for its series, so the shipped build moved off it.
 - [Git](https://git-scm.com/downloads/)
 - *(Optional)* [Inno Setup 6](https://jrsoftware.org/isinfo.php) for the Windows installer
 - *(Optional)* UPX - auto-downloaded by the build script into `build/tools/` if missing
@@ -354,7 +361,7 @@ pytest -v
 .\build\build-exe-only.bat   # exe only (faster iteration)
 ```
 
-Output lands in `dist/`. *(Python 3.13+ pre-release? add `--pre` to the pip install if stable wheels aren't out yet.)*
+Output lands in `dist/`. *(On a Python newer than 3.13? If a stable wheel isn't out yet, add `--pre` to the pip install.)*
 
 </details>
 
@@ -388,22 +395,6 @@ Every release you download from this repo is signed end-to-end - no SmartScreen 
 
 - **Translations** by the community - see [Translators](#translators) above.
 - **Built on** [PyQt6](https://www.riverbankcomputing.com/software/pyqt/), [matplotlib](https://matplotlib.org/), [psutil](https://github.com/giampaolo/psutil), [numpy](https://numpy.org/), [pywin32](https://github.com/mhammond/pywin32), [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (when available), and [Inno Setup](https://jrsoftware.org/isinfo.php).
-
----
-
-## Star History
-
-<div align="center">
-
-<a href="https://www.star-history.com/?type=date&repos=erez-c137%2FNetSpeedTray">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=erez-c137/NetSpeedTray&type=date&theme=dark&legend=top-left&sealed_token=g6Vso18jKEaxFTNmiO_SQiH6FghFMJaYtQcfxlf_CkBRG9L0_5qPpfLnJv3TjDWWyW2AgEjzknIhRo104R-2gP7mZ3Unw7GVSwKOZLGNqmPk8vWnVeRy0l0W4X0_4qSD_N4by_q87KMvWN4s8-_zY4wCQYUv0ICzhIrJpSE1dVvEczpbFC7Z9dIeON4M" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=erez-c137/NetSpeedTray&type=date&legend=top-left&sealed_token=g6Vso18jKEaxFTNmiO_SQiH6FghFMJaYtQcfxlf_CkBRG9L0_5qPpfLnJv3TjDWWyW2AgEjzknIhRo104R-2gP7mZ3Unw7GVSwKOZLGNqmPk8vWnVeRy0l0W4X0_4qSD_N4by_q87KMvWN4s8-_zY4wCQYUv0ICzhIrJpSE1dVvEczpbFC7Z9dIeON4M" />
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=erez-c137/NetSpeedTray&type=date&legend=top-left&sealed_token=g6Vso18jKEaxFTNmiO_SQiH6FghFMJaYtQcfxlf_CkBRG9L0_5qPpfLnJv3TjDWWyW2AgEjzknIhRo104R-2gP7mZ3Unw7GVSwKOZLGNqmPk8vWnVeRy0l0W4X0_4qSD_N4by_q87KMvWN4s8-_zY4wCQYUv0ICzhIrJpSE1dVvEczpbFC7Z9dIeON4M" />
-  </picture>
-</a>
-
-</div>
 
 ---
 

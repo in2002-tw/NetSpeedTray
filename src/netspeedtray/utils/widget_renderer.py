@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 from netspeedtray.core.widget_state import SpeedDataSnapshot, AggregatedSpeedData
-from netspeedtray.utils.helpers import format_speed, calculate_monotone_cubic_interpolation
+from netspeedtray.utils.helpers import has_dedicated_vram, format_speed, calculate_monotone_cubic_interpolation
 from PyQt6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPen, QPainterPath
 from PyQt6.QtCore import Qt, QPointF, QRect, QRectF
 from netspeedtray import constants
@@ -300,7 +300,7 @@ class WidgetRenderer:
         """Draws current upload and download speeds.
 
         identity_text: optional network-identity band tag (e.g. "5G") drawn to the right of the unit
-        column, vertically centred. When present it participates in the block width (so side_by_side
+        column, vertically centered. When present it participates in the block width (so side_by_side
         right-align accounts for it) and the content bounds. Reserved width is the fixed worst-case
         (IDENTITY_BAND_REFERENCE), so a 2.4G<->5G change never shifts the layout.
         """
@@ -389,7 +389,7 @@ class WidgetRenderer:
             bot_raw = upload if bot_is_upload else download
             self._draw_speed_line(painter, bot_is_upload, bot_val, bot_unit, bot_raw, arrow_x, number_x, unit_x, dw_y, config, number_area_width)
 
-            # v2.1: draw the network-identity badge to the right of the unit column, vertically centred.
+            # v2.1: draw the network-identity badge to the right of the unit column, vertically centered.
             if identity_badge_w:
                 badge_x = unit_x + max_unit_width + IDENTITY_BAND_GAP_PX
                 badge_y = (height - identity_parts["h"]) / 2.0
@@ -497,14 +497,14 @@ class WidgetRenderer:
                 arrow = config.arrow_up_symbol or self.i18n.UPLOAD_ARROW
             else:
                 arrow = config.arrow_down_symbol or self.i18n.DOWNLOAD_ARROW
-            # Opt-in per-direction arrow colour (#168). Off by default, so the arrow keeps sharing
-            # the band pen set above and the whole line stays one colour signal.
+            # Opt-in per-direction arrow color (#168). Off by default, so the arrow keeps sharing
+            # the band pen set above and the whole line stays one color signal.
             if config.use_custom_arrow_colors:
                 painter.setPen(self._cached_pens['arrow_up' if is_upload else 'arrow_down'])
             painter.drawText(arrow_x, y, arrow)
             if config.use_custom_arrow_colors:
                 # Restore the band pen BEFORE the number. Forgetting this makes the value silently
-                # inherit the arrow colour, which reads as a colour-coding regression (cf. #153).
+                # inherit the arrow color, which reads as a color-coding regression (cf. #153).
                 if config.color_coding:
                     band = self._speed_band(raw_bytes, config.high_speed_threshold, config.low_speed_threshold)
                     painter.setPen(self._cached_pens[band])
@@ -529,7 +529,7 @@ class WidgetRenderer:
 
         The FIXED percent COLUMN in draw_hardware_stats (not this string) provides the constant width
         now, so the value reads naturally: it's right-aligned in that column when memory is inline
-        (stacked - keeps the "|" lined up across rows) and left-aligned when memory is on its own row
+        (stacked - keeps the memory column lined up across rows) and left-aligned when memory is on its own row
         (single-stat modes - lines up under the percent). Either way the segment width never changes,
         so the readout no longer slides or clips (#179 and the side-by-side alignment work).
 
@@ -594,7 +594,7 @@ class WidgetRenderer:
             sp = self.metrics.horizontalAdvance(" ")
 
             # Keep percent / suffix / memory as SEPARATE cells (not one concatenated string) so each sits
-            # in its own fixed-width column. That lines the rows up (the "|" and RAM/VRAM align across CPU
+            # in its own fixed-width column. That lines the rows up (the memory values align across CPU
             # and GPU even when one has a temp sensor and the other doesn't) AND makes the segment width
             # CONSTANT as values cross digit boundaries - so the whole readout stops sliding and never
             # clips. Worst-case column widths are computed once and are identical for every row.
@@ -603,7 +603,14 @@ class WidgetRenderer:
                 mem_text, total = "", 0.0
                 if mem_info and mem_info[0] is not None:
                     used, total = mem_info[0], (mem_info[1] or 0.0)
-                    mem_text = f"{used:.1f}/{total:.1f}G" if total > 0 else f"{used:.1f}G"
+                    # An iGPU has no dedicated VRAM and PDH reports 0.0 for it. Draw nothing rather
+                    # than spend width on a "0.0G" that reads like a measurement. RAM is unaffected:
+                    # it always has a real total. Matches the Monitor's Overview tile, which has
+                    # always hidden itself in this case.
+                    if total <= 0 and not has_dedicated_vram(used):
+                        mem_text = ""
+                    else:
+                        mem_text = f"{used:.1f}/{total:.1f}G" if total > 0 else f"{used:.1f}G"
                 rows.append({'label': label, 'color': color_hex, 'total': total,
                              'pct': self._fmt_hw_percent(val),
                              'suffix': self._build_hw_suffix(temp, power, show_temps, show_power),
@@ -625,7 +632,10 @@ class WidgetRenderer:
             totals = [r['total'] for r in rows if r['total'] > 0]
             t = max(totals) if totals else 0.0
             mem_num_col = self.metrics.horizontalAdvance(f"{t:.1f}/{t:.1f}G" if t > 0 else "9999G") if any_mem else 0
-            sep_col = self.metrics.horizontalAdvance(" | ")
+            # A gap, not a glyph. The memory value used to be introduced by " | ", which read as
+            # clutter on a readout that is only a few characters wide (#250). Whitespace separates
+            # it just as well, and drops a few pixels of reserved width while it is at it.
+            sep_col = self.metrics.horizontalAdvance("  ")
             inline_mem = is_compact
             mem_col = (sep_col + mem_num_col) if (any_mem and inline_mem) else 0
 
@@ -661,7 +671,6 @@ class WidgetRenderer:
                     painter.drawText(vx + pct_col + sp, y, r['suffix'])  # live suffix in its worst-case column
                 if inline_mem and mem_col and r['mem']:
                     mx = vx + pct_col + suffix_col
-                    painter.drawText(mx, y, " | ")
                     # right-align the number in its column so the trailing 'G' lines up across rows
                     painter.drawText(mx + mem_col - self.metrics.horizontalAdvance(r['mem']), y, r['mem'])
                 y += line_height
@@ -784,7 +793,7 @@ class WidgetRenderer:
         if not config.graph_enabled or len(history) < constants.renderer.MIN_GRAPH_POINTS:
             return
 
-        # Honour the configured graph timespan: the series buffers more than the visible window (so a
+        # Honor the configured graph timespan: the series buffers more than the visible window (so a
         # longer timespan reveals already-recorded samples at once), so show only the last `max_samples`
         # points (= history_minutes worth). Without this the graph plotted the whole buffer and 3 min
         # looked identical to 20 min.

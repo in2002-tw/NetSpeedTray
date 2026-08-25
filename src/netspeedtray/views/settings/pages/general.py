@@ -36,7 +36,7 @@ class GeneralPage(QWidget):
             getattr(self.i18n, "LANGUAGE_AUTO_DETECT", "Auto-detect (system)"), userData=None)
         for code, name in self.i18n.LANGUAGE_MAP.items():
             self.language_combo.addItem(name, userData=code)
-        # Qt defaults to 10 visible rows; we ship 13 languages plus the auto-detect row, so the
+        # Qt defaults to 10 visible rows; we ship 14 languages plus the auto-detect row, so the
         # last entries sat below the fold with no wheel scrolling in the popup (#237).
         self.language_combo.setMaxVisibleItems(self.language_combo.count())
         self.language_combo.currentIndexChanged.connect(self.on_change)
@@ -74,7 +74,7 @@ class GeneralPage(QWidget):
 
         # --- Behavior ---
         # NOTE (2.0 IA): free-move, keep-visible-in-fullscreen and tray-offset moved to the new Widget
-        # page (they're about the on-taskbar widget, not the app). General keeps app-level behaviour.
+        # page (they're about the on-taskbar widget, not the app). General keeps app-level behavior.
         layout.addWidget(section_header(self.i18n.BEHAVIOR_GROUP_TITLE))
         self.start_with_windows = Win11Toggle(label_text="")
         self.start_with_windows.toggled.connect(self.on_change)

@@ -620,8 +620,8 @@ class GraphRenderer(QObject):
             plotted_ts, plotted_up, plotted_down = self._plot_high_res(plot_datetimes_array, upload_mbps, download_mbps, target_end_time=end_time)
             self._configure_axes(start_time, end_time, period_key, timestamps, plotted_up, plotted_down)
         elif stat_type in ("cpu", "gpu") and hw_styles is not None:
-            # Monitor's "toggle" layout: a single CPU- or GPU-only line that must honour the same
-            # display settings as combined/separate (per-role colour, Smooth, fixed/auto y-axis). The
+            # Monitor's "toggle" layout: a single CPU- or GPU-only line that must honor the same
+            # display settings as combined/separate (per-role color, Smooth, fixed/auto y-axis). The
             # standalone GraphWindow passes no hw_styles, so it keeps the legacy path below (+ tooltips).
             self._render_hwsingle(history_data, start_time, end_time, period_key, stat_type, hw_styles)
         else:
@@ -697,6 +697,28 @@ class GraphRenderer(QObject):
         self.ax_cpu.set_ylabel(self._lbl(self.i18n.ORDER_TYPE_CPU), fontsize=8, color=text_color)
         self.ax_gpu.set_ylabel(self._lbl(self.i18n.ORDER_TYPE_GPU), fontsize=8, color=text_color)
 
+    @staticmethod
+    def _rows_as_floats(series) -> np.ndarray:
+        """(timestamp, value, ...) rows as a float array, accepting datetime OR epoch timestamps.
+
+        The two data sources disagree on the first column and both reach these renderers:
+        `get_hardware_history()` is typed - and really returns - `List[Tuple[datetime, float]]`,
+        while the speed-history path yields epoch floats. `np.array(rows, dtype=float)` cannot
+        convert a datetime, so every hardware series raised
+
+            TypeError: float() argument must be ... not 'datetime.datetime'
+
+        which `GraphHost._on_data_ready` swallowed into a log line - leaving the Monitor's Hardware
+        tab drawing empty 0.0-1.0 axes with no hint that anything had failed. Mirrors the coercion
+        the network branch of `render()` already does inline.
+        """
+        rows = []
+        for row in series:
+            ts = row[0]
+            rows.append([ts.timestamp() if isinstance(ts, datetime) else float(ts)]
+                        + [float(v) for v in row[1:]])
+        return np.array(rows, dtype=float)
+
     def _render_overview(self, data_dict, start_time, end_time, period_key: str, boot_time):
         """Internal helper for overview plotting."""
         # Clear existing artists so live refresh doesn't keep stacking lines.
@@ -716,14 +738,14 @@ class GraphRenderer(QObject):
             self.ax_upload.set_ylim(bottom=0, top=max(up)*1.2 if max(up)>0 else 1)
 
         # Plot CPU
-        cpu = np.array(data_dict.get("cpu", []), dtype=float)
+        cpu = self._rows_as_floats(data_dict.get("cpu", []))
         if len(cpu) > 0:
             ts = [datetime.fromtimestamp(t) for t in cpu[:, 0]]
             self.ax_cpu.plot(ts, cpu[:, 1], color=constants.graph.CPU_LINE_COLOR, linewidth=1)
             self.ax_cpu.set_ylim(0, 100)
 
         # Plot GPU
-        gpu = np.array(data_dict.get("gpu", []), dtype=float)
+        gpu = self._rows_as_floats(data_dict.get("gpu", []))
         if len(gpu) > 0:
             ts = [datetime.fromtimestamp(t) for t in gpu[:, 0]]
             self.ax_gpu.plot(ts, gpu[:, 1], color=constants.graph.GPU_LINE_COLOR, linewidth=1)
@@ -805,7 +827,7 @@ class GraphRenderer(QObject):
                 (end_time or datetime.fromtimestamp(ts_max)))
 
     def _render_hwcombined(self, data_dict, start_time, end_time, period_key, hw_styles=None):
-        """Plots CPU + GPU on one 0-100% axis: CPU solid, GPU dashed, vendor-coloured, with a legend.
+        """Plots CPU + GPU on one 0-100% axis: CPU solid, GPU dashed, vendor-colored, with a legend.
         Two lines, no fills - overlapping gradient fills would muddy a shared axis."""
         from netspeedtray.utils import hardware_vendors as hv
         ax = self.ax_download
@@ -823,7 +845,7 @@ class GraphRenderer(QObject):
             series = data_dict.get(role) or []
             if not series:
                 continue
-            arr = np.array([(float(item[0]), float(item[1])) for item in series], dtype=float)
+            arr = self._rows_as_floats(series)
             ts = arr[:, 0]
             dts = [datetime.fromtimestamp(t) for t in ts]
             ys = self._smooth_series(arr[:, 1], styles.get("smooth_window", 5)) if smooth else arr[:, 1]
@@ -925,7 +947,7 @@ class GraphRenderer(QObject):
 
     def _render_hwseparate(self, data_dict, start_time, end_time, period_key, hw_styles=None):
         """CPU top, GPU middle, RAM bottom - each its own axis, so no shared-axis collision and thus
-        each vendor-coloured SOLID (no dashed sibling needed). Mirrors the combined graph's roles."""
+        each vendor-colored SOLID (no dashed sibling needed). Mirrors the combined graph's roles."""
         from netspeedtray.utils import hardware_vendors as hv
         styles = hw_styles or {}
         smooth = bool(styles.get("smoothing"))
@@ -941,7 +963,7 @@ class GraphRenderer(QObject):
             if not series:
                 self._apply_hw_ylim(ax, fixed, 0.0)
                 continue
-            arr = np.array([(float(item[0]), float(item[1])) for item in series], dtype=float)
+            arr = self._rows_as_floats(series)
             ts = arr[:, 0]
             dts = [datetime.fromtimestamp(t) for t in ts]
             ys = self._smooth_series(arr[:, 1], styles.get("smooth_window", 5)) if smooth else arr[:, 1]
@@ -962,8 +984,8 @@ class GraphRenderer(QObject):
         self._configure_xaxis_format(period_key, axis=self.ax_ram)
 
     def _render_hwsingle(self, history_data, start_time, end_time, period_key, stat_type, hw_styles=None):
-        """One CPU- OR GPU-only line for the Monitor's "toggle" layout. Honours the same display
-        settings as _render_hwcombined/_render_hwseparate - per-role colour (vendor default fallback),
+        """One CPU- OR GPU-only line for the Monitor's "toggle" layout. Honors the same display
+        settings as _render_hwcombined/_render_hwseparate - per-role color (vendor default fallback),
         the Smooth toggle, and the fixed-0-100 vs auto y-axis - which the legacy single-stat path
         (still used by the standalone GraphWindow, hw_styles=None) does not."""
         from netspeedtray.utils import hardware_vendors as hv
@@ -974,7 +996,7 @@ class GraphRenderer(QObject):
         ax.clear()
         self._format_hardware_axes(stat_type)
 
-        raw = np.array(history_data, dtype=float)
+        raw = self._rows_as_floats(history_data)
         timestamps = raw[:, 0]
         dts = [datetime.fromtimestamp(t) for t in timestamps]
         values = raw[:, 1]
